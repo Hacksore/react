@@ -141,6 +141,7 @@ import {
   commitDetachRef,
   commitAttachRef,
   commitResetTextContent,
+  commitPassiveEffectDurations,
 } from './ReactFiberCommitWork';
 import {enqueueUpdate} from './ReactUpdateQueue';
 import {resetContextDependencies} from './ReactFiberNewContext';
@@ -149,6 +150,8 @@ import {createCapturedValue} from './ReactCapturedValue';
 
 import {
   recordCommitTime,
+  recordPassiveEffectDuration,
+  startPassiveEffectTimer,
   startProfilerTimer,
   stopProfilerTimerIfRunningAndRecordDelta,
 } from './ReactProfilerTimer';
@@ -2199,6 +2202,7 @@ function flushPassiveEffectsImpl() {
   if (rootWithPendingPassiveEffects === null) {
     return false;
   }
+
   const root = rootWithPendingPassiveEffects;
   const expirationTime = pendingPassiveEffectsExpirationTime;
   rootWithPendingPassiveEffects = null;
@@ -2220,6 +2224,13 @@ function flushPassiveEffectsImpl() {
       i < pendingUnmountedPassiveEffectDestroyFunctions.length;
       i++
     ) {
+      // TODO (bvaughn) If we are in a profiling build, within a Profiled subtree,
+      // we should measure the duration of passive destroy functions.
+      // However by the time we are flushing passive effects for an unmount,
+      // the effect's Fiber is no longer in the tree-
+      // so we don't know if there was a Profiler above us.
+      // Let's revisit this if we refactor to preserve the unmounted Fiber tree.
+
       const destroy = pendingUnmountedPassiveEffectDestroyFunctions[i];
       invokeGuardedCallback(null, destroy, null);
     }
@@ -2242,12 +2253,23 @@ function flushPassiveEffectsImpl() {
     while (effect !== null) {
       if (__DEV__) {
         setCurrentDebugFiberInDEV(effect);
-        invokeGuardedCallback(
-          null,
-          commitPassiveHookUnmountEffects,
-          null,
-          effect,
-        );
+        if (enableProfilerTimer && effect.mode & ProfileMode) {
+          startPassiveEffectTimer();
+          invokeGuardedCallback(
+            null,
+            commitPassiveHookUnmountEffects,
+            null,
+            effect,
+          );
+          recordPassiveEffectDuration(effect);
+        } else {
+          invokeGuardedCallback(
+            null,
+            commitPassiveHookUnmountEffects,
+            null,
+            effect,
+          );
+        }
         if (hasCaughtError()) {
           effectWithErrorDuringUnmount = effect;
           invariant(effect !== null, 'Should be working on an effect.');
@@ -2257,7 +2279,16 @@ function flushPassiveEffectsImpl() {
         resetCurrentDebugFiberInDEV();
       } else {
         try {
-          commitPassiveHookUnmountEffects(effect);
+          if (enableProfilerTimer && effect.mode & ProfileMode) {
+            try {
+              startPassiveEffectTimer();
+              commitPassiveHookUnmountEffects(effect);
+            } finally {
+              recordPassiveEffectDuration(effect);
+            }
+          } else {
+            commitPassiveHookUnmountEffects(effect);
+          }
         } catch (error) {
           effectWithErrorDuringUnmount = effect;
           invariant(effect !== null, 'Should be working on an effect.');
@@ -2280,12 +2311,23 @@ function flushPassiveEffectsImpl() {
       if (effectWithErrorDuringUnmount !== effect) {
         if (__DEV__) {
           setCurrentDebugFiberInDEV(effect);
-          invokeGuardedCallback(
-            null,
-            commitPassiveHookMountEffects,
-            null,
-            effect,
-          );
+          if (enableProfilerTimer && effect.mode & ProfileMode) {
+            startPassiveEffectTimer();
+            invokeGuardedCallback(
+              null,
+              commitPassiveHookMountEffects,
+              null,
+              effect,
+            );
+            recordPassiveEffectDuration(effect);
+          } else {
+            invokeGuardedCallback(
+              null,
+              commitPassiveHookMountEffects,
+              null,
+              effect,
+            );
+          }
           if (hasCaughtError()) {
             invariant(effect !== null, 'Should be working on an effect.');
             const error = clearCaughtError();
@@ -2294,13 +2336,27 @@ function flushPassiveEffectsImpl() {
           resetCurrentDebugFiberInDEV();
         } else {
           try {
-            commitPassiveHookMountEffects(effect);
+            if (enableProfilerTimer && effect.mode & ProfileMode) {
+              try {
+                startPassiveEffectTimer();
+                commitPassiveHookMountEffects(effect);
+              } finally {
+                recordPassiveEffectDuration(effect);
+              }
+            } else {
+              commitPassiveHookMountEffects(effect);
+            }
           } catch (error) {
             invariant(effect !== null, 'Should be working on an effect.');
             captureCommitPhaseError(effect, error);
           }
         }
       }
+
+      if (enableProfilerTimer) {
+        commitPassiveEffectDurations(root, effect);
+      }
+
       const nextNextEffect = effect.nextEffect;
       // Remove nextEffect pointer to assist GC
       effect.nextEffect = null;
@@ -2314,7 +2370,13 @@ function flushPassiveEffectsImpl() {
     while (effect !== null) {
       if (__DEV__) {
         setCurrentDebugFiberInDEV(effect);
-        invokeGuardedCallback(null, commitPassiveHookEffects, null, effect);
+        if (enableProfilerTimer && effect.mode & ProfileMode) {
+          startPassiveEffectTimer();
+          invokeGuardedCallback(null, commitPassiveHookEffects, null, effect);
+          recordPassiveEffectDuration(effect);
+        } else {
+          invokeGuardedCallback(null, commitPassiveHookEffects, null, effect);
+        }
         if (hasCaughtError()) {
           invariant(effect !== null, 'Should be working on an effect.');
           const error = clearCaughtError();
@@ -2323,12 +2385,26 @@ function flushPassiveEffectsImpl() {
         resetCurrentDebugFiberInDEV();
       } else {
         try {
-          commitPassiveHookEffects(effect);
+          if (enableProfilerTimer && effect.mode & ProfileMode) {
+            try {
+              startPassiveEffectTimer();
+              commitPassiveHookEffects(effect);
+            } finally {
+              recordPassiveEffectDuration(effect);
+            }
+          } else {
+            commitPassiveHookEffects(effect);
+          }
         } catch (error) {
           invariant(effect !== null, 'Should be working on an effect.');
           captureCommitPhaseError(effect, error);
         }
       }
+
+      if (enableProfilerTimer) {
+        commitPassiveEffectDurations(root, effect);
+      }
+
       const nextNextEffect = effect.nextEffect;
       // Remove nextEffect pointer to assist GC
       effect.nextEffect = null;

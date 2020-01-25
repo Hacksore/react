@@ -75,7 +75,14 @@ import {startPhaseTimer, stopPhaseTimer} from './ReactDebugFiberPerf';
 import {getStackByFiberInDevAndProd} from './ReactCurrentFiber';
 import {logCapturedError} from './ReactFiberErrorLogger';
 import {resolveDefaultProps} from './ReactFiberLazyComponent';
-import {getCommitTime} from './ReactProfilerTimer';
+import {
+  getCommitTime,
+  recordLayoutEffectDuration,
+  recordPassiveEffectDuration,
+  startLayoutEffectTimer,
+  startPassiveEffectTimer,
+} from './ReactProfilerTimer';
+import {ProfileMode} from './ReactTypeOfMode';
 import {commitUpdateQueue} from './ReactUpdateQueue';
 import {
   getPublicInstance,
@@ -401,11 +408,18 @@ export function commitPassiveHookEffects(finishedWork: Fiber): void {
       case ForwardRef:
       case SimpleMemoComponent:
       case Chunk: {
-        // TODO (#17945) We should call all passive destroy functions (for all fibers)
-        // before calling any create functions. The current approach only serializes
-        // these for a single fiber.
-        commitHookEffectList(HookPassive, NoHookEffect, finishedWork);
-        commitHookEffectList(NoHookEffect, HookPassive, finishedWork);
+        if (enableProfilerTimer && finishedWork.mode & ProfileMode) {
+          try {
+            startPassiveEffectTimer();
+            commitHookEffectList(HookPassive, NoHookEffect, finishedWork);
+            commitHookEffectList(NoHookEffect, HookPassive, finishedWork);
+          } finally {
+            recordPassiveEffectDuration(finishedWork);
+          }
+        } else {
+          commitHookEffectList(HookPassive, NoHookEffect, finishedWork);
+          commitHookEffectList(NoHookEffect, HookPassive, finishedWork);
+        }
         break;
       }
       default:
@@ -421,7 +435,16 @@ export function commitPassiveHookUnmountEffects(finishedWork: Fiber): void {
       case ForwardRef:
       case SimpleMemoComponent:
       case Chunk: {
-        commitHookEffectList(HookPassive, NoHookEffect, finishedWork);
+        if (enableProfilerTimer && finishedWork.mode & ProfileMode) {
+          try {
+            startPassiveEffectTimer();
+            commitHookEffectList(HookPassive, NoHookEffect, finishedWork);
+          } finally {
+            recordPassiveEffectDuration(finishedWork);
+          }
+        } else {
+          commitHookEffectList(HookPassive, NoHookEffect, finishedWork);
+        }
         break;
       }
       default:
@@ -437,11 +460,75 @@ export function commitPassiveHookMountEffects(finishedWork: Fiber): void {
       case ForwardRef:
       case SimpleMemoComponent:
       case Chunk: {
-        commitHookEffectList(NoHookEffect, HookPassive, finishedWork);
+        if (enableProfilerTimer && finishedWork.mode & ProfileMode) {
+          try {
+            startPassiveEffectTimer();
+            commitHookEffectList(NoHookEffect, HookPassive, finishedWork);
+          } finally {
+            recordPassiveEffectDuration(finishedWork);
+          }
+        } else {
+          commitHookEffectList(NoHookEffect, HookPassive, finishedWork);
+        }
         break;
       }
       default:
         break;
+    }
+  }
+}
+
+export function commitPassiveEffectDurations(
+  finishedRoot: FiberRoot,
+  finishedWork: Fiber,
+): void {
+  if (enableProfilerTimer) {
+    // Only Profilers with work in their subtree will have an Update effect scheduled.
+    if ((finishedWork.effectTag & Update) !== NoEffect) {
+      switch (finishedWork.tag) {
+        case Profiler: {
+          const {passiveEffectDuration} = finishedWork.stateNode;
+          const {id, onPostCommit} = finishedWork.memoizedProps;
+
+          // This value will still reflect the previous commit phase.
+          // It does not get reset until the start of the next commit phase.
+          const commitTime = getCommitTime();
+
+          if (typeof onPostCommit === 'function') {
+            if (enableSchedulerTracing) {
+              onPostCommit(
+                id,
+                finishedWork.alternate === null ? 'mount' : 'update',
+                passiveEffectDuration,
+                commitTime,
+                finishedRoot.memoizedInteractions,
+              );
+            } else {
+              onPostCommit(
+                id,
+                finishedWork.alternate === null ? 'mount' : 'update',
+                passiveEffectDuration,
+                commitTime,
+              );
+            }
+          }
+
+          // Bubble times to the next nearest ancestor Profiler.
+          // After we process that Profiler, we'll bubble further up.
+          let parentFiber = finishedWork.return;
+          while (parentFiber !== null) {
+            if (parentFiber.tag === Profiler) {
+              const parentStateNode = parentFiber.stateNode;
+              parentStateNode.passiveEffectDuration += passiveEffectDuration;
+              break;
+            }
+            parentFiber = parentFiber.return;
+          }
+          break;
+        }
+        default:
+          break;
+      }
     }
   }
 }
@@ -461,7 +548,16 @@ function commitLifeCycles(
       // This is done to prevent sibling component effects from interfering with each other,
       // e.g. a destroy function in one component should never override a ref set
       // by a create function in another component during the same commit.
-      commitHookEffectList(NoHookEffect, HookLayout, finishedWork);
+      if (enableProfilerTimer && finishedWork.mode & ProfileMode) {
+        try {
+          startLayoutEffectTimer();
+          commitHookEffectList(NoHookEffect, HookLayout, finishedWork);
+        } finally {
+          recordLayoutEffectDuration(finishedWork);
+        }
+      } else {
+        commitHookEffectList(NoHookEffect, HookLayout, finishedWork);
+      }
       return;
     }
     case ClassComponent: {
@@ -499,7 +595,16 @@ function commitLifeCycles(
               }
             }
           }
-          instance.componentDidMount();
+          if (enableProfilerTimer && finishedWork.mode & ProfileMode) {
+            try {
+              startLayoutEffectTimer();
+              instance.componentDidMount();
+            } finally {
+              recordLayoutEffectDuration(finishedWork);
+            }
+          } else {
+            instance.componentDidMount();
+          }
           stopPhaseTimer();
         } else {
           const prevProps =
@@ -538,11 +643,24 @@ function commitLifeCycles(
               }
             }
           }
-          instance.componentDidUpdate(
-            prevProps,
-            prevState,
-            instance.__reactInternalSnapshotBeforeUpdate,
-          );
+          if (enableProfilerTimer && finishedWork.mode & ProfileMode) {
+            try {
+              startLayoutEffectTimer();
+              instance.componentDidUpdate(
+                prevProps,
+                prevState,
+                instance.__reactInternalSnapshotBeforeUpdate,
+              );
+            } finally {
+              recordLayoutEffectDuration(finishedWork);
+            }
+          } else {
+            instance.componentDidUpdate(
+              prevProps,
+              prevState,
+              instance.__reactInternalSnapshotBeforeUpdate,
+            );
+          }
           stopPhaseTimer();
         }
       }
@@ -635,7 +753,10 @@ function commitLifeCycles(
     }
     case Profiler: {
       if (enableProfilerTimer) {
-        const onRender = finishedWork.memoizedProps.onRender;
+        const {onCommit, onRender} = finishedWork.memoizedProps;
+        const {effectDuration} = finishedWork.stateNode;
+
+        const commitTime = getCommitTime();
 
         if (typeof onRender === 'function') {
           if (enableSchedulerTracing) {
@@ -645,7 +766,7 @@ function commitLifeCycles(
               finishedWork.actualDuration,
               finishedWork.treeBaseDuration,
               finishedWork.actualStartTime,
-              getCommitTime(),
+              commitTime,
               finishedRoot.memoizedInteractions,
             );
           } else {
@@ -655,9 +776,40 @@ function commitLifeCycles(
               finishedWork.actualDuration,
               finishedWork.treeBaseDuration,
               finishedWork.actualStartTime,
-              getCommitTime(),
+              commitTime,
             );
           }
+        }
+
+        if (typeof onCommit === 'function') {
+          if (enableSchedulerTracing) {
+            onCommit(
+              finishedWork.memoizedProps.id,
+              current === null ? 'mount' : 'update',
+              effectDuration,
+              commitTime,
+              finishedRoot.memoizedInteractions,
+            );
+          } else {
+            onCommit(
+              finishedWork.memoizedProps.id,
+              current === null ? 'mount' : 'update',
+              effectDuration,
+              commitTime,
+            );
+          }
+        }
+
+        // Propagate layout effect durations to the next nearest Profiler ancestor.
+        // Do not reset these values until the next render so DevTools has a chance to read them first.
+        let parentFiber = finishedWork.return;
+        while (parentFiber !== null) {
+          if (parentFiber.tag === Profiler) {
+            const parentStateNode = parentFiber.stateNode;
+            parentStateNode.effectDuration += effectDuration;
+            break;
+          }
+          parentFiber = parentFiber.return;
         }
       }
       return;
@@ -806,7 +958,13 @@ function commitUnmount(
                 if ((tag & HookPassive) !== NoHookEffect) {
                   enqueuePendingPassiveEffectDestroyFn(destroy);
                 } else {
-                  safelyCallDestroy(current, destroy);
+                  if (enableProfilerTimer && current.mode & ProfileMode) {
+                    startLayoutEffectTimer();
+                    safelyCallDestroy(current, destroy);
+                    recordLayoutEffectDuration(current);
+                  } else {
+                    safelyCallDestroy(current, destroy);
+                  }
                 }
               }
               effect = effect.next;
@@ -847,7 +1005,13 @@ function commitUnmount(
       safelyDetachRef(current);
       const instance = current.stateNode;
       if (typeof instance.componentWillUnmount === 'function') {
-        safelyCallComponentWillUnmount(current, instance);
+        if (enableProfilerTimer && current.mode & ProfileMode) {
+          startLayoutEffectTimer();
+          safelyCallComponentWillUnmount(current, instance);
+          recordLayoutEffectDuration(current);
+        } else {
+          safelyCallComponentWillUnmount(current, instance);
+        }
       }
       return;
     }
@@ -1347,7 +1511,16 @@ function commitWork(current: Fiber | null, finishedWork: Fiber): void {
         // This prevents sibling component effects from interfering with each other,
         // e.g. a destroy function in one component should never override a ref set
         // by a create function in another component during the same commit.
-        commitHookEffectList(HookLayout, NoHookEffect, finishedWork);
+        if (enableProfilerTimer && finishedWork.mode & ProfileMode) {
+          try {
+            startLayoutEffectTimer();
+            commitHookEffectList(HookLayout, NoHookEffect, finishedWork);
+          } finally {
+            recordLayoutEffectDuration(finishedWork);
+          }
+        } else {
+          commitHookEffectList(HookLayout, NoHookEffect, finishedWork);
+        }
         return;
       }
       case Profiler: {
@@ -1390,7 +1563,16 @@ function commitWork(current: Fiber | null, finishedWork: Fiber): void {
       // This prevents sibling component effects from interfering with each other,
       // e.g. a destroy function in one component should never override a ref set
       // by a create function in another component during the same commit.
-      commitHookEffectList(HookLayout, NoHookEffect, finishedWork);
+      if (enableProfilerTimer && finishedWork.mode & ProfileMode) {
+        try {
+          startLayoutEffectTimer();
+          commitHookEffectList(HookLayout, NoHookEffect, finishedWork);
+        } finally {
+          recordLayoutEffectDuration(finishedWork);
+        }
+      } else {
+        commitHookEffectList(HookLayout, NoHookEffect, finishedWork);
+      }
       return;
     }
     case ClassComponent: {

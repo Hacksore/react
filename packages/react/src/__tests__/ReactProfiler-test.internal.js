@@ -120,10 +120,9 @@ describe('Profiler', () => {
             it('should warn if required params are missing', () => {
               expect(() => {
                 ReactTestRenderer.create(<React.Profiler />);
-              }).toErrorDev(
-                'Profiler must specify an "id" string and "onRender" function as props',
-                {withoutStack: true},
-              );
+              }).toErrorDev('Profiler must specify an "id" as a prop', {
+                withoutStack: true,
+              });
             });
           }
 
@@ -1262,6 +1261,1077 @@ describe('Profiler', () => {
         expect(callback).toHaveBeenCalledTimes(1);
       });
     });
+
+    describe('onCommit callback', () => {
+      beforeEach(() => {
+        jest.resetModules();
+
+        loadModules({enableSchedulerTracing});
+      });
+
+      it('should report time spent in layout effects and commit lifecycles', () => {
+        const callback = jest.fn();
+
+        const ComponetWithEffects = () => {
+          React.useLayoutEffect(() => {
+            Scheduler.unstable_advanceTime(10);
+            return () => {
+              Scheduler.unstable_advanceTime(100);
+            };
+          }, []);
+          React.useLayoutEffect(() => {
+            Scheduler.unstable_advanceTime(1000);
+            return () => {
+              Scheduler.unstable_advanceTime(10000);
+            };
+          });
+          React.useEffect(() => {
+            // This passive effect is here to verify that its time isn't reported.
+            Scheduler.unstable_advanceTime(5);
+          });
+          return null;
+        };
+
+        class ComponentWithCommitHooks extends React.Component {
+          componentDidMount() {
+            Scheduler.unstable_advanceTime(100000);
+          }
+          componentDidUpdate() {
+            Scheduler.unstable_advanceTime(1000000);
+          }
+          render() {
+            return null;
+          }
+        }
+
+        Scheduler.unstable_advanceTime(1);
+
+        const renderer = ReactTestRenderer.create(
+          <React.Profiler id="mount-test" onCommit={callback}>
+            <ComponetWithEffects />
+            <ComponentWithCommitHooks />
+          </React.Profiler>,
+        );
+
+        expect(callback).toHaveBeenCalledTimes(1);
+
+        let call = callback.mock.calls[0];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('mount-test');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(101010); // durations
+        expect(call[3]).toBe(1); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        Scheduler.unstable_advanceTime(1);
+
+        renderer.update(
+          <React.Profiler id="update-test" onCommit={callback}>
+            <ComponetWithEffects />
+            <ComponentWithCommitHooks />
+          </React.Profiler>,
+        );
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        call = callback.mock.calls[1];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('update-test');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(1011000); // durations
+        expect(call[3]).toBe(101017); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        Scheduler.unstable_advanceTime(1);
+
+        renderer.update(
+          <React.Profiler id="unmount-test" onCommit={callback} />,
+        );
+
+        expect(callback).toHaveBeenCalledTimes(3);
+
+        call = callback.mock.calls[2];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('unmount-test');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(10100); // durations
+        expect(call[3]).toBe(1112023); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      it('should report time spent in layout effects and commit lifecycles with cascading renders', () => {
+        const callback = jest.fn();
+
+        const ComponetWithEffects = ({shouldCascade}) => {
+          const [didCascade, setDidCascade] = React.useState(false);
+          React.useLayoutEffect(() => {
+            if (shouldCascade && !didCascade) {
+              setDidCascade(true);
+            }
+            Scheduler.unstable_advanceTime(didCascade ? 30 : 10);
+            return () => {
+              Scheduler.unstable_advanceTime(100);
+            };
+          }, [didCascade, shouldCascade]);
+          return null;
+        };
+
+        class ComponentWithCommitHooks extends React.Component {
+          state = {
+            didCascade: false,
+          };
+          componentDidMount() {
+            Scheduler.unstable_advanceTime(1000);
+          }
+          componentDidUpdate() {
+            Scheduler.unstable_advanceTime(10000);
+            if (this.props.shouldCascade && !this.state.didCascade) {
+              this.setState({didCascade: true});
+            }
+          }
+          render() {
+            return null;
+          }
+        }
+
+        Scheduler.unstable_advanceTime(1);
+
+        const renderer = ReactTestRenderer.create(
+          <React.Profiler id="mount-test" onCommit={callback}>
+            <ComponetWithEffects shouldCascade={true} />
+            <ComponentWithCommitHooks />
+          </React.Profiler>,
+        );
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        let call = callback.mock.calls[0];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('mount-test');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(1010); // durations
+        expect(call[3]).toBe(1); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        call = callback.mock.calls[1];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('mount-test');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(130); // durations
+        expect(call[3]).toBe(1011); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        Scheduler.unstable_advanceTime(1);
+
+        renderer.update(
+          <React.Profiler id="update-test" onCommit={callback}>
+            <ComponetWithEffects />
+            <ComponentWithCommitHooks shouldCascade={true} />
+          </React.Profiler>,
+        );
+
+        expect(callback).toHaveBeenCalledTimes(4);
+
+        call = callback.mock.calls[2];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('update-test');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(10130); // durations
+        expect(call[3]).toBe(1142); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        call = callback.mock.calls[3];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('update-test');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(10000); // durations
+        expect(call[3]).toBe(11272); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      it('should bubble time spent in layout effects to higher profilers', () => {
+        const callback = jest.fn();
+
+        const ComponetWithEffects = ({
+          cleanupDuration,
+          duration,
+          setCountRef,
+        }) => {
+          const setCount = React.useState(0)[1];
+          if (setCountRef != null) {
+            setCountRef.current = setCount;
+          }
+          React.useLayoutEffect(() => {
+            Scheduler.unstable_advanceTime(duration);
+            return () => {
+              Scheduler.unstable_advanceTime(cleanupDuration);
+            };
+          });
+          Scheduler.unstable_advanceTime(1);
+          return null;
+        };
+
+        const setCountRef = React.createRef(null);
+
+        let renderer = null;
+        ReactTestRenderer.act(() => {
+          renderer = ReactTestRenderer.create(
+            <React.Profiler id="root-mount" onCommit={callback}>
+              <React.Profiler id="a">
+                <ComponetWithEffects
+                  duration={10}
+                  cleanupDuration={100}
+                  setCountRef={setCountRef}
+                />
+              </React.Profiler>
+              <React.Profiler id="b">
+                <ComponetWithEffects duration={1000} cleanupDuration={10000} />
+              </React.Profiler>
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(1);
+
+        let call = callback.mock.calls[0];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root-mount');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(1010); // durations
+        expect(call[3]).toBe(2); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        ReactTestRenderer.act(() => setCountRef.current(count => count + 1));
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        call = callback.mock.calls[1];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root-mount');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(110); // durations
+        expect(call[3]).toBe(1013); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        ReactTestRenderer.act(() => {
+          renderer.update(
+            <React.Profiler id="root-update" onCommit={callback}>
+              <React.Profiler id="b">
+                <ComponetWithEffects duration={1000} cleanupDuration={10000} />
+              </React.Profiler>
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(3);
+
+        call = callback.mock.calls[2];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root-update');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(1100); // durations
+        expect(call[3]).toBe(1124); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      it('should properly report time in layout effects even when there are errors', () => {
+        const callback = jest.fn();
+
+        class ErrorBoundary extends React.Component {
+          state = {error: null};
+          static getDerivedStateFromError(error) {
+            return {error};
+          }
+          render() {
+            return this.state.error === null
+              ? this.props.children
+              : this.props.fallback;
+          }
+        }
+
+        const ComponetWithEffects = ({
+          cleanupDuration,
+          duration,
+          effectDuration,
+          shouldThrow,
+        }) => {
+          React.useLayoutEffect(() => {
+            Scheduler.unstable_advanceTime(effectDuration);
+            if (shouldThrow) {
+              throw Error('expected');
+            }
+            return () => {
+              Scheduler.unstable_advanceTime(cleanupDuration);
+            };
+          });
+          Scheduler.unstable_advanceTime(duration);
+          return null;
+        };
+
+        Scheduler.unstable_advanceTime(1);
+
+        // Test an error that happens during an effect
+
+        ReactTestRenderer.act(() => {
+          ReactTestRenderer.create(
+            <React.Profiler id="root" onCommit={callback}>
+              <ErrorBoundary
+                fallback={
+                  <ComponetWithEffects
+                    duration={10000000}
+                    effectDuration={100000000}
+                    cleanupDuration={1000000000}
+                  />
+                }>
+                <ComponetWithEffects
+                  duration={10}
+                  effectDuration={100}
+                  cleanupDuration={1000}
+                  shouldThrow={true}
+                />
+              </ErrorBoundary>
+              <ComponetWithEffects
+                duration={10000}
+                effectDuration={100000}
+                cleanupDuration={1000000}
+              />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        let call = callback.mock.calls[0];
+
+        // Initial render (with error)
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(100100); // durations
+        expect(call[3]).toBe(10011); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        call = callback.mock.calls[1];
+
+        // Cleanup render from error boundary
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(100000000); // durations
+        expect(call[3]).toBe(10110111); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      it('should properly report time in layout effect cleanup functions even when there are errors', () => {
+        const callback = jest.fn();
+
+        class ErrorBoundary extends React.Component {
+          state = {error: null};
+          static getDerivedStateFromError(error) {
+            return {error};
+          }
+          render() {
+            return this.state.error === null
+              ? this.props.children
+              : this.props.fallback;
+          }
+        }
+
+        const ComponetWithEffects = ({
+          cleanupDuration,
+          duration,
+          effectDuration,
+          shouldThrow = false,
+        }) => {
+          React.useLayoutEffect(() => {
+            Scheduler.unstable_advanceTime(effectDuration);
+            return () => {
+              Scheduler.unstable_advanceTime(cleanupDuration);
+              if (shouldThrow) {
+                throw Error('expected');
+              }
+            };
+          });
+          Scheduler.unstable_advanceTime(duration);
+          return null;
+        };
+
+        Scheduler.unstable_advanceTime(1);
+
+        let renderer = null;
+
+        ReactTestRenderer.act(() => {
+          renderer = ReactTestRenderer.create(
+            <React.Profiler id="root" onCommit={callback}>
+              <ErrorBoundary
+                fallback={
+                  <ComponetWithEffects
+                    duration={10000000}
+                    effectDuration={100000000}
+                    cleanupDuration={1000000000}
+                  />
+                }>
+                <ComponetWithEffects
+                  duration={10}
+                  effectDuration={100}
+                  cleanupDuration={1000}
+                  shouldThrow={true}
+                />
+              </ErrorBoundary>
+              <ComponetWithEffects
+                duration={10000}
+                effectDuration={100000}
+                cleanupDuration={1000000}
+              />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(1);
+
+        let call = callback.mock.calls[0];
+
+        // Initial render
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(100100); // durations
+        expect(call[3]).toBe(10011); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        callback.mockClear();
+
+        // Test an error that happens during an cleanup function
+
+        ReactTestRenderer.act(() => {
+          renderer.update(
+            <React.Profiler id="root" onCommit={callback}>
+              <ErrorBoundary
+                fallback={
+                  <ComponetWithEffects
+                    duration={10000000}
+                    effectDuration={100000000}
+                    cleanupDuration={1000000000}
+                  />
+                }>
+                <ComponetWithEffects
+                  duration={10}
+                  effectDuration={100}
+                  cleanupDuration={1000}
+                  shouldThrow={false}
+                />
+              </ErrorBoundary>
+              <ComponetWithEffects
+                duration={10000}
+                effectDuration={100000}
+                cleanupDuration={1000000}
+              />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        call = callback.mock.calls[0];
+
+        // Update (that throws)
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(1101100); // durations
+        expect(call[3]).toBe(120121); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        call = callback.mock.calls[1];
+
+        // Cleanup render from error boundary
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(100001000); // durations
+        expect(call[3]).toBe(11221221); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      if (enableSchedulerTracing) {
+        it('should report interactions that were active', () => {
+          const callback = jest.fn();
+
+          const ComponetWithEffects = () => {
+            const [didMount, setDidMount] = React.useState(false);
+            React.useLayoutEffect(() => {
+              Scheduler.unstable_advanceTime(didMount ? 1000 : 100);
+              if (!didMount) {
+                setDidMount(true);
+              }
+              return () => {
+                Scheduler.unstable_advanceTime(10000);
+              };
+            }, [didMount]);
+            Scheduler.unstable_advanceTime(10);
+            return null;
+          };
+
+          const interaction = {
+            id: 0,
+            name: 'mount',
+            timestamp: Scheduler.unstable_now(),
+          };
+
+          Scheduler.unstable_advanceTime(1);
+
+          SchedulerTracing.unstable_trace(
+            interaction.name,
+            interaction.timestamp,
+            () => {
+              ReactTestRenderer.create(
+                <React.Profiler id="root" onCommit={callback}>
+                  <ComponetWithEffects />
+                </React.Profiler>,
+              );
+            },
+          );
+
+          expect(callback).toHaveBeenCalledTimes(2);
+
+          let call = callback.mock.calls[0];
+
+          expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+          expect(call[0]).toBe('root');
+          expect(call[1]).toBe('mount');
+          expect(call[4]).toMatchInteractions([interaction]);
+
+          call = callback.mock.calls[1];
+
+          expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+          expect(call[0]).toBe('root');
+          expect(call[1]).toBe('update');
+          expect(call[4]).toMatchInteractions([interaction]);
+        });
+      }
+    });
+
+    describe('onPostCommit callback', () => {
+      beforeEach(() => {
+        jest.resetModules();
+
+        loadModules({enableSchedulerTracing});
+      });
+
+      it('should report time spent in passive effects', () => {
+        const callback = jest.fn();
+
+        const ComponetWithEffects = () => {
+          React.useLayoutEffect(() => {
+            // This layout effect is here to verify that its time isn't reported.
+            Scheduler.unstable_advanceTime(5);
+          });
+          React.useEffect(() => {
+            Scheduler.unstable_advanceTime(10);
+            return () => {
+              Scheduler.unstable_advanceTime(100);
+            };
+          }, []);
+          React.useEffect(() => {
+            Scheduler.unstable_advanceTime(1000);
+            return () => {
+              Scheduler.unstable_advanceTime(10000);
+            };
+          });
+          return null;
+        };
+
+        Scheduler.unstable_advanceTime(1);
+
+        let renderer;
+        ReactTestRenderer.act(() => {
+          renderer = ReactTestRenderer.create(
+            <React.Profiler id="mount-test" onPostCommit={callback}>
+              <ComponetWithEffects />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(1);
+
+        let call = callback.mock.calls[0];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('mount-test');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(1010); // durations
+        expect(call[3]).toBe(1); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        Scheduler.unstable_advanceTime(1);
+
+        ReactTestRenderer.act(() => {
+          renderer.update(
+            <React.Profiler id="update-test" onPostCommit={callback}>
+              <ComponetWithEffects />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        call = callback.mock.calls[1];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('update-test');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(11000); // durations
+        expect(call[3]).toBe(1017); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        Scheduler.unstable_advanceTime(1);
+
+        ReactTestRenderer.act(() => {
+          renderer.update(
+            <React.Profiler id="unmount-test" onPostCommit={callback} />,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(3);
+
+        call = callback.mock.calls[2];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('unmount-test');
+        expect(call[1]).toBe('update');
+        // TODO (bvaughn) The duration reported below should be 10100, but is 0
+        // by the time the passive effect is flushed its parent Fiber pointer is gone.
+        // If we refactor to preserve the unmounted Fiber tree we could fix this.
+        // The current implementation would require too much extra overhead to track this.
+        expect(call[2]).toBe(0); // durations
+        expect(call[3]).toBe(12023); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      it('should report time spent in passive effects with cascading renders', () => {
+        const callback = jest.fn();
+
+        const ComponetWithEffects = () => {
+          const [didMount, setDidMount] = React.useState(false);
+          React.useEffect(() => {
+            if (!didMount) {
+              setDidMount(true);
+            }
+            Scheduler.unstable_advanceTime(didMount ? 30 : 10);
+            return () => {
+              Scheduler.unstable_advanceTime(100);
+            };
+          }, [didMount]);
+          return null;
+        };
+
+        Scheduler.unstable_advanceTime(1);
+
+        ReactTestRenderer.act(() => {
+          ReactTestRenderer.create(
+            <React.Profiler id="mount-test" onPostCommit={callback}>
+              <ComponetWithEffects />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        let call = callback.mock.calls[0];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('mount-test');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(10); // durations
+        expect(call[3]).toBe(1); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        call = callback.mock.calls[1];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('mount-test');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(130); // durations
+        expect(call[3]).toBe(11); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      it('should bubble time spent in effects to higher profilers', () => {
+        const callback = jest.fn();
+
+        const ComponetWithEffects = ({
+          cleanupDuration,
+          duration,
+          setCountRef,
+        }) => {
+          const setCount = React.useState(0)[1];
+          if (setCountRef != null) {
+            setCountRef.current = setCount;
+          }
+          React.useEffect(() => {
+            Scheduler.unstable_advanceTime(duration);
+            return () => {
+              Scheduler.unstable_advanceTime(cleanupDuration);
+            };
+          });
+          Scheduler.unstable_advanceTime(1);
+          return null;
+        };
+
+        const setCountRef = React.createRef(null);
+
+        let renderer = null;
+        ReactTestRenderer.act(() => {
+          renderer = ReactTestRenderer.create(
+            <React.Profiler id="root-mount" onPostCommit={callback}>
+              <React.Profiler id="a">
+                <ComponetWithEffects
+                  duration={10}
+                  cleanupDuration={100}
+                  setCountRef={setCountRef}
+                />
+              </React.Profiler>
+              <React.Profiler id="b">
+                <ComponetWithEffects duration={1000} cleanupDuration={10000} />
+              </React.Profiler>
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(1);
+
+        let call = callback.mock.calls[0];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root-mount');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(1010); // durations
+        expect(call[3]).toBe(2); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        ReactTestRenderer.act(() => setCountRef.current(count => count + 1));
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        call = callback.mock.calls[1];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root-mount');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(110); // durations
+        expect(call[3]).toBe(1013); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        ReactTestRenderer.act(() => {
+          renderer.update(
+            <React.Profiler id="root-update" onPostCommit={callback}>
+              <React.Profiler id="b">
+                <ComponetWithEffects duration={1000} cleanupDuration={10000} />
+              </React.Profiler>
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(3);
+
+        call = callback.mock.calls[2];
+
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root-update');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(1100); // durations
+        expect(call[3]).toBe(1124); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      it('should properly report time in passive effects even when there are errors', () => {
+        const callback = jest.fn();
+
+        class ErrorBoundary extends React.Component {
+          state = {error: null};
+          static getDerivedStateFromError(error) {
+            return {error};
+          }
+          render() {
+            return this.state.error === null
+              ? this.props.children
+              : this.props.fallback;
+          }
+        }
+
+        const ComponetWithEffects = ({
+          cleanupDuration,
+          duration,
+          effectDuration,
+          shouldThrow,
+        }) => {
+          React.useEffect(() => {
+            Scheduler.unstable_advanceTime(effectDuration);
+            if (shouldThrow) {
+              throw Error('expected');
+            }
+            return () => {
+              Scheduler.unstable_advanceTime(cleanupDuration);
+            };
+          });
+          Scheduler.unstable_advanceTime(duration);
+          return null;
+        };
+
+        Scheduler.unstable_advanceTime(1);
+
+        // Test an error that happens during an effect
+
+        ReactTestRenderer.act(() => {
+          ReactTestRenderer.create(
+            <React.Profiler id="root" onPostCommit={callback}>
+              <ErrorBoundary
+                fallback={
+                  <ComponetWithEffects
+                    duration={10000000}
+                    effectDuration={100000000}
+                    cleanupDuration={1000000000}
+                  />
+                }>
+                <ComponetWithEffects
+                  duration={10}
+                  effectDuration={100}
+                  cleanupDuration={1000}
+                  shouldThrow={true}
+                />
+              </ErrorBoundary>
+              <ComponetWithEffects
+                duration={10000}
+                effectDuration={100000}
+                cleanupDuration={1000000}
+              />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        let call = callback.mock.calls[0];
+
+        // Initial render (with error)
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(100100); // durations
+        expect(call[3]).toBe(10011); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        call = callback.mock.calls[1];
+
+        // Cleanup render from error boundary
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(100000000); // durations
+        expect(call[3]).toBe(10110111); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      it('should properly report time in passive effect cleanup functions even when there are errors', () => {
+        const callback = jest.fn();
+
+        class ErrorBoundary extends React.Component {
+          state = {error: null};
+          static getDerivedStateFromError(error) {
+            return {error};
+          }
+          render() {
+            return this.state.error === null
+              ? this.props.children
+              : this.props.fallback;
+          }
+        }
+
+        const ComponetWithEffects = ({
+          cleanupDuration,
+          duration,
+          effectDuration,
+          shouldThrow = false,
+        }) => {
+          React.useEffect(() => {
+            Scheduler.unstable_advanceTime(effectDuration);
+            return () => {
+              Scheduler.unstable_advanceTime(cleanupDuration);
+              if (shouldThrow) {
+                throw Error('expected');
+              }
+            };
+          });
+          Scheduler.unstable_advanceTime(duration);
+          return null;
+        };
+
+        Scheduler.unstable_advanceTime(1);
+
+        let renderer = null;
+
+        ReactTestRenderer.act(() => {
+          renderer = ReactTestRenderer.create(
+            <React.Profiler id="root" onPostCommit={callback}>
+              <ErrorBoundary
+                fallback={
+                  <ComponetWithEffects
+                    duration={10000000}
+                    effectDuration={100000000}
+                    cleanupDuration={1000000000}
+                  />
+                }>
+                <ComponetWithEffects
+                  duration={10}
+                  effectDuration={100}
+                  cleanupDuration={1000}
+                  shouldThrow={true}
+                />
+              </ErrorBoundary>
+              <ComponetWithEffects
+                duration={10000}
+                effectDuration={100000}
+                cleanupDuration={1000000}
+              />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(1);
+
+        let call = callback.mock.calls[0];
+
+        // Initial render
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('mount');
+        expect(call[2]).toBe(100100); // durations
+        expect(call[3]).toBe(10011); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        callback.mockClear();
+
+        // Test an error that happens during an cleanup function
+
+        ReactTestRenderer.act(() => {
+          renderer.update(
+            <React.Profiler id="root" onPostCommit={callback}>
+              <ErrorBoundary
+                fallback={
+                  <ComponetWithEffects
+                    duration={10000000}
+                    effectDuration={100000000}
+                    cleanupDuration={1000000000}
+                  />
+                }>
+                <ComponetWithEffects
+                  duration={10}
+                  effectDuration={100}
+                  cleanupDuration={1000}
+                  shouldThrow={false}
+                />
+              </ErrorBoundary>
+              <ComponetWithEffects
+                duration={10000}
+                effectDuration={100000}
+                cleanupDuration={1000000}
+              />
+            </React.Profiler>,
+          );
+        });
+
+        expect(callback).toHaveBeenCalledTimes(2);
+
+        call = callback.mock.calls[0];
+
+        // Update (that throws)
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(1101000); // durations
+        expect(call[3]).toBe(120121); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+
+        call = callback.mock.calls[1];
+
+        // Cleanup render from error boundary
+        expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+        expect(call[0]).toBe('root');
+        expect(call[1]).toBe('update');
+        expect(call[2]).toBe(100000000); // durations
+        expect(call[3]).toBe(11221121); // commit start time (before mutations or effects)
+        expect(call[4]).toEqual(enableSchedulerTracing ? new Set() : undefined); // interaction events
+      });
+
+      if (enableSchedulerTracing) {
+        it('should report interactions that were active', () => {
+          const callback = jest.fn();
+
+          const ComponetWithEffects = () => {
+            const [didMount, setDidMount] = React.useState(false);
+            React.useEffect(() => {
+              Scheduler.unstable_advanceTime(didMount ? 1000 : 100);
+              if (!didMount) {
+                setDidMount(true);
+              }
+              return () => {
+                Scheduler.unstable_advanceTime(10000);
+              };
+            }, [didMount]);
+            Scheduler.unstable_advanceTime(10);
+            return null;
+          };
+
+          const interaction = {
+            id: 0,
+            name: 'mount',
+            timestamp: Scheduler.unstable_now(),
+          };
+
+          Scheduler.unstable_advanceTime(1);
+
+          ReactTestRenderer.act(() => {
+            SchedulerTracing.unstable_trace(
+              interaction.name,
+              interaction.timestamp,
+              () => {
+                ReactTestRenderer.create(
+                  <React.Profiler id="root" onPostCommit={callback}>
+                    <ComponetWithEffects />
+                  </React.Profiler>,
+                );
+              },
+            );
+          });
+
+          expect(callback).toHaveBeenCalledTimes(2);
+
+          let call = callback.mock.calls[0];
+
+          expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+          expect(call[0]).toBe('root');
+          expect(call[1]).toBe('mount');
+          expect(call[4]).toMatchInteractions([interaction]);
+
+          call = callback.mock.calls[1];
+
+          expect(call).toHaveLength(enableSchedulerTracing ? 5 : 4);
+          expect(call[0]).toBe('root');
+          expect(call[1]).toBe('update');
+          expect(call[4]).toMatchInteractions([interaction]);
+        });
+      }
+    });
   });
 
   describe('interaction tracing', () => {
@@ -1769,6 +2839,45 @@ describe('Profiler', () => {
       expect(getWorkForReactThreads(onWorkStopped)[0][0]).toMatchInteractions([
         interactionTwo,
       ]);
+    });
+
+    it('should not mark an interaction complete while passive effects are outstanding', () => {
+      const onCommit = jest.fn();
+      const onPostCommit = jest.fn();
+
+      const ComponetWithEffects = () => {
+        React.useEffect(() => {
+          Scheduler.unstable_yieldValue('passive effect');
+        });
+        React.useLayoutEffect(() => {
+          Scheduler.unstable_yieldValue('layout effect');
+        });
+        Scheduler.unstable_yieldValue('render');
+        return null;
+      };
+
+      SchedulerTracing.unstable_trace('mount', Scheduler.unstable_now(), () => {
+        ReactTestRenderer.create(
+          <React.Profiler
+            id="root"
+            onCommit={onCommit}
+            onPostCommit={onPostCommit}>
+            <ComponetWithEffects />
+          </React.Profiler>,
+        );
+      });
+
+      expect(Scheduler).toHaveYielded(['render', 'layout effect']);
+
+      expect(onCommit).toHaveBeenCalled();
+      expect(onPostCommit).not.toHaveBeenCalled();
+      expect(onInteractionScheduledWorkCompleted).not.toHaveBeenCalled();
+
+      expect(Scheduler).toFlushAndYieldThrough(['passive effect']);
+
+      expect(onCommit).toHaveBeenCalled();
+      expect(onPostCommit).toHaveBeenCalled();
+      expect(onInteractionScheduledWorkCompleted).toHaveBeenCalledTimes(1);
     });
 
     it('should report the expected times when a high-priority update interrupts a low-priority update', () => {
