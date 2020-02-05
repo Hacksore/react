@@ -36,7 +36,7 @@ type ConnectOptions = {
 
 installHook(window);
 
-const hook: DevToolsHook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
+const hook: ?DevToolsHook = window.__REACT_DEVTOOLS_GLOBAL_HOOK__;
 
 let savedComponentFilters: Array<ComponentFilter> = getDefaultComponentFilters();
 

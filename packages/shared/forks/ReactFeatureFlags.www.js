@@ -15,6 +15,7 @@ export const {
   debugRenderPhaseSideEffectsForStrictMode,
   disableInputAttributeSyncing,
   enableTrustedTypesIntegration,
+  deferPassiveEffectCleanupDuringUnmount,
 } = require('ReactFeatureFlags');
 
 // In www, we have experimental support for gathering data
@@ -100,6 +101,8 @@ export const disableUnstableRenderSubtreeIntoContainer = false;
 export const warnUnstableRenderSubtreeIntoContainer = false;
 
 export const disableUnstableCreatePortal = false;
+
+export const isTestEnvironment = false;
 
 // Flow magic to verify the exports of this file match the original version.
 // eslint-disable-next-line no-unused-vars
